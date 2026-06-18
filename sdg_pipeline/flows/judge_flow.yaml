@@ -1,0 +1,28 @@
+metadata:
+  id: debug-judge-flow
+  name: "Debug Judge Flow"
+  description: "Runs only the prompt-builder and LLM blocks so judge_raw can be inspected."
+  version: "1.0.0"
+  dataset_requirements:
+    required_columns:
+      - conversation_str
+      - target_response
+
+blocks:
+  - block_type: "PromptBuilderBlock"
+    block_config:
+      block_name: "build_judge_prompt"
+      input_cols:
+        - "conversation_str"
+        - "target_response"
+      output_cols: "judge_messages"
+      prompt_config_path: "../prompts/judge_prompt.yaml"
+
+  - block_type: "LLMChatBlock"
+    block_config:
+      block_name: "judge_llm"
+      input_cols: "judge_messages"
+      output_cols: "judge_raw"
+      async_mode: true
+      temperature: 0.0
+      max_tokens: 1024

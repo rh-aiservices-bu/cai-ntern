@@ -1,0 +1,28 @@
+metadata:
+  id: generate-llm-flow
+  name: "Synthetic Example Generator (LLM only)"
+  description: "Runs only the prompt-builder and LLM blocks. Tag parsing is handled in Python."
+  version: "1.0.0"
+  dataset_requirements:
+    required_columns:
+      - conversation_str
+      - target_response
+
+blocks:
+  - block_type: "PromptBuilderBlock"
+    block_config:
+      block_name: "build_gen_prompt"
+      input_cols:
+        - "conversation_str"
+        - "target_response"
+      output_cols: "gen_messages"
+      prompt_config_path: "../prompts/generate_prompt.yaml"
+
+  - block_type: "LLMChatBlock"
+    block_config:
+      block_name: "generate_example"
+      input_cols: "gen_messages"
+      output_cols: "generated_output"
+      async_mode: true
+      temperature: 0.8
+      max_tokens: 8192
