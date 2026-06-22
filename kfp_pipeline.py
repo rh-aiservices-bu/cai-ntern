@@ -22,9 +22,9 @@ local.init(runner=local.SubprocessRunner())
     description="Fetch traces → judge → generate 3x synthetic data → LoRA fine-tune → evaluate",
 )
 def ithelpdesk_pipeline(
+    model_url: str,
     mlflow_tracking_uri: str = "https://mlflow.redhat-ods-applications.svc.cluster.local:8443",
-    experiment_name: str = "canopy-experiment",
-    model_url: str = "<MODEL_URL>",
+    experiment_name: str = "it-helpdesk-sdg-finetune",
     api_key: str = "no-key-required",
     base_model: str = "Qwen/Qwen2-0.5B-Instruct",
 ):

@@ -18,7 +18,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ── MLflow configuration ───────────────────────────────────────────────────────
 MLFLOW_TRACKING_URI = "https://mlflow.redhat-ods-applications.svc.cluster.local:8443"
-EXPERIMENT_NAME     = "<EXPERIMENT_NAME>"
+EXPERIMENT_NAME     = "it-helpdesk-sdg-finetune"
 
 os.environ["MLFLOW_TRACKING_AUTH"]       = "kubernetes"
 os.environ["MLFLOW_TRACKING_INSECURE_TLS"] = "true"

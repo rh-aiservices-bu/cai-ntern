@@ -70,28 +70,20 @@ import ast
 import json
 import re
 from pathlib import Path
-import os
 
 import mlflow
 import pandas as pd
 from datasets import Dataset
 from sdg_hub import Flow
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-MLFLOW_TRACKING_URI = "<TRACKING_URI>"
-
-MLFLOW_WORKSPACE = "<WORKSPACE>"
-# os.environ["MLFLOW_TRACKING_AUTH"] = "kubernetes"
-os.environ["MLFLOW_TRACKING_INSECURE_TLS"] = "true"
-os.environ["MLFLOW_WORKSPACE"] = MLFLOW_WORKSPACE
-os.environ["MLFLOW_TRACKING_TOKEN"] = "<TRACKING_TOKEN>"
-EXPERIMENT_NAME = "<EXPERIMENT_NAME>"
-
-MODEL = "openai/Qwen3.6-35B-A3B"
-MODEL_URL = "<MODEL_URL>"
-API_KEY = "<API_KEY>"
-NUM_GENERATIONS = 3          # synthetic examples to produce per high-quality seed
-NUM_OF_TRACES = 20
+# ── Configuration (overridden at runtime by sdg_component) ────────────────────
+MLFLOW_TRACKING_URI = ""
+EXPERIMENT_NAME     = ""
+MODEL               = "openai/Qwen3.6-35B-A3B"
+MODEL_URL           = ""
+API_KEY             = "no-key-required"
+NUM_GENERATIONS     = 3
+NUM_OF_TRACES       = 20
 CURATED_OUTPUT = "curated_traces.csv"
 SCORES_OUTPUT = "scores_report.csv"
 TRAINING_OUTPUT = "training_data.csv"
