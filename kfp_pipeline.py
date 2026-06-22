@@ -23,6 +23,7 @@ from evaluate import evaluate_component
 )
 def ithelpdesk_pipeline(
     model_url: str,
+    storage_class: str = "gp3-csi",
     model_name: str = "openai/Qwen3.6-35B-A3B",
     mlflow_tracking_uri: str = "https://mlflow.redhat-ods-applications.svc.cluster.local:8443",
     experiment_name: str = "it-helpdesk-sdg-finetune",
@@ -42,6 +43,7 @@ def ithelpdesk_pipeline(
         pvc_name_suffix="-ithelpdesk-pvc",
         access_modes=["ReadWriteOnce"],
         size="50Gi",
+        storage_class_name=storage_class,
     )
 
     # Step 1: SDG
@@ -82,8 +84,6 @@ def ithelpdesk_pipeline(
 
 
 if __name__ == "__main__":
-    import os
-
     namespace_path = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
     with open(namespace_path) as f:
         namespace = f.read().strip()
@@ -106,6 +106,8 @@ if __name__ == "__main__":
         ithelpdesk_pipeline,
         arguments={
             "model_url": "<MODEL_URL>",  # set your vLLM endpoint here
+            "storage_class": "gp3-csi",
+            "api_key": "sk-..."
         },
         experiment_name="it-helpdesk-sdg-finetune",
         enable_caching=False,

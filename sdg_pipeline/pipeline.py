@@ -18,7 +18,7 @@ from kfp.dsl import component
 
 @component(
     base_image="python:3.11",
-    packages_to_install=["mlflow", "sdg-hub", "pandas", "datasets", "urllib3"],
+    packages_to_install=["mlflow[kubernetes]", "sdg-hub", "pandas", "datasets", "urllib3"],
 )
 def sdg_component(
     model_url: str,
@@ -45,7 +45,7 @@ def sdg_component(
 
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    # ── MLflow auth ──────────────────────────────────────────────────────────
+    # # MLflow auth #
     os.environ["MLFLOW_TRACKING_AUTH"]         = "kubernetes"
     os.environ["MLFLOW_TRACKING_INSECURE_TLS"] = "true"
 
@@ -62,7 +62,7 @@ def sdg_component(
     mlflow.set_tracking_uri(mlflow_tracking_uri)
     mlflow.set_experiment(experiment_name)
 
-    # ── Output paths ─────────────────────────────────────────────────────────
+    # # Output paths #
     WORKSPACE       = Path("/workspace")
     FLOWS_DIR       = WORKSPACE / "flows"
     PROMPTS_DIR     = WORKSPACE / "prompts"
@@ -73,7 +73,7 @@ def sdg_component(
     FLOWS_DIR.mkdir(parents=True, exist_ok=True)
     PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ── Write flow + prompt YAMLs ─────────────────────────────────────────────
+    # # Write flow + prompt YAMLs #
     (FLOWS_DIR / "judge_flow.yaml").write_text("""\
 metadata:
   id: judge-flow
@@ -189,7 +189,7 @@ blocks:
         "a pass that does nothing",
     ]
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # # Helpers #
     def _parse_metadata(raw):
         if isinstance(raw, dict):
             return raw
@@ -231,24 +231,38 @@ blocks:
             lines.append(f"{prefix}: {msg['content']}")
         return "\n".join(lines)
 
-    # ── Fetch sessions ────────────────────────────────────────────────────────
+    # # Fetch sessions #
     df = mlflow.search_traces(max_results=num_of_traces)
     status_col = "status" if "status" in df.columns else "state"
     sessions = {}
 
     for _, row in df.iterrows():
-        if row.get(status_col) != "OK":
+        if str(row.get(status_col, "")).upper() not in ("OK", "TRACE_STATE_OK"):
             continue
-        request  = str(row.get("request",  "") or "").strip()
-        response = str(row.get("response", "") or "").strip()
+        raw_request  = row.get("request",  {}) or {}
+        raw_response = row.get("response", {}) or {}
+
+        # extract user message from openai-style request
+        if isinstance(raw_request, dict):
+            messages = raw_request.get("messages", [])
+            user_msgs = [m.get("content", "") for m in messages if m.get("role") == "user"]
+            request = " ".join(user_msgs).strip()
+        else:
+            request = str(raw_request).strip()
+
+        # extract assistant content from openai-style response
+        if isinstance(raw_response, dict):
+            choices = raw_response.get("choices", [])
+            response = choices[0]["message"]["content"].strip() if choices else ""
+        else:
+            response = str(raw_response).strip()
+
         if not request or not response:
             continue
         if any(p in request.lower() for p in SYSTEM_MESSAGE_PATTERNS):
             continue
         meta = _parse_metadata(row.get("trace_metadata") or row.get("request_metadata") or {})
-        session_id = _extract_session_id(meta)
-        if not session_id:
-            continue
+        session_id = _extract_session_id(meta) or str(row.get("trace_id", ""))
         sessions.setdefault(session_id, []).append({
             "request_time": row.get("request_time") or row.get("timestamp_ms", 0),
             "request": request,
@@ -259,7 +273,7 @@ blocks:
         turns.sort(key=lambda t: t["request_time"])
     print(f"Fetched {len(sessions)} sessions")
 
-    # ── Build examples ────────────────────────────────────────────────────────
+    # # Build examples #
     rows = []
     for session_id, turns in sessions.items():
         history = []
@@ -280,7 +294,7 @@ blocks:
     examples_df = pd.DataFrame(rows)
     print(f"Built {len(examples_df)} examples")
 
-    # ── Judge real examples ───────────────────────────────────────────────────
+    # # Judge real examples #
     for _dir in ["/workspace/checkpoints/judge", "/workspace/checkpoints/generate", "/workspace/checkpoints/judge_synthetic"]:
         shutil.rmtree(_dir, ignore_errors=True)
 
@@ -314,7 +328,7 @@ blocks:
         print("No examples passed quality filter.")
         return
 
-    # ── Generate synthetic examples ───────────────────────────────────────────
+    # # Generate synthetic examples #
     copies = [curated_df.assign(generation_idx=i) for i in range(num_generations)]
     seed_df = pd.concat(copies, ignore_index=True)
 
@@ -335,8 +349,9 @@ blocks:
     gen_result["generated_request"]  = gen_result["generated_content"].apply(lambda t: extract_tag(t, "user_request"))
     gen_result["generated_response"] = gen_result["generated_content"].apply(lambda t: extract_tag(t, "assistant_response"))
 
-    # ── Judge synthetic examples ──────────────────────────────────────────────
-    synth_judge_df = gen_result.copy()
+    # # Judge synthetic examples #
+    cols_to_drop = [c for c in ["judge_messages", "judge_raw", "judge_content", "quality_score", "judge_reason"] if c in gen_result.columns]
+    synth_judge_df = gen_result.drop(columns=cols_to_drop).copy()
     synth_judge_df["conversation_str"] = synth_judge_df["generated_request"].apply(lambda r: f"User: {r}")
     synth_judge_df["target_response"]  = synth_judge_df["generated_response"]
 
@@ -358,7 +373,7 @@ blocks:
     synthetic_df = synth_result[synth_result["quality_score"].notna() & (synth_result["quality_score"] >= 7)].reset_index(drop=True)
     print(f"Synthetic judge: {before_synth} -> {len(synthetic_df)} kept (score >= 7)")
 
-    # ── Save training_data.csv ────────────────────────────────────────────────
+    # # Save training_data.csv #
     training_rows = []
 
     for _, row in curated_df.iterrows():
