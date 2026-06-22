@@ -16,26 +16,42 @@ Requirements:
 from kfp.dsl import component
 
 
-@component
+@component(
+    base_image="python:3.11",
+    packages_to_install=["mlflow", "sdg-hub", "pandas", "datasets", "urllib3"],
+)
 def sdg_component(
-    mlflow_tracking_uri: str,
-    experiment_name: str,
     model_url: str,
+    model_name: str = "openai/Qwen3.6-35B-A3B",
+    mlflow_tracking_uri: str = "https://mlflow.redhat-ods-applications.svc.cluster.local:8443",
+    experiment_name: str = "it-helpdesk-sdg-finetune",
     api_key: str = "no-key-required",
+    num_generations: int = 3,
+    num_of_traces: int = 20,
 ):
-    """KFP component: run the full SDG pipeline (fetch → judge → generate → save)."""
+    """KFP component: fetch MLflow traces → judge → generate synthetic data → save."""
+    import ast
+    import json
     import os
+    import re
     import shutil
-    import sys
+    from pathlib import Path
+
+    import mlflow
+    import pandas as pd
     import urllib3
+    from datasets import Dataset
+    from sdg_hub import Flow
+
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    os.environ["MLFLOW_TRACKING_AUTH"]       = "kubernetes"
+    # ── MLflow auth ──────────────────────────────────────────────────────────
+    os.environ["MLFLOW_TRACKING_AUTH"]         = "kubernetes"
     os.environ["MLFLOW_TRACKING_INSECURE_TLS"] = "true"
 
-    namespace_path = "/run/secrets/kubernetes.io/serviceaccount/namespace"
-    if os.path.exists(namespace_path):
-        with open(namespace_path) as f:
+    ns_path = "/run/secrets/kubernetes.io/serviceaccount/namespace"
+    if os.path.exists(ns_path):
+        with open(ns_path) as f:
             os.environ["MLFLOW_WORKSPACE"] = f.read().strip()
 
     token_path = "/run/secrets/kubernetes.io/serviceaccount/token"
@@ -43,110 +59,196 @@ def sdg_component(
         with open(token_path) as f:
             os.environ["MLFLOW_TRACKING_TOKEN"] = f.read().strip()
 
-    import sdg_pipeline.pipeline as p
+    mlflow.set_tracking_uri(mlflow_tracking_uri)
+    mlflow.set_experiment(experiment_name)
 
-    p.MLFLOW_TRACKING_URI = mlflow_tracking_uri
-    p.EXPERIMENT_NAME     = experiment_name
-    p.MODEL_URL           = model_url
-    p.API_KEY             = api_key
+    # ── Output paths ─────────────────────────────────────────────────────────
+    WORKSPACE       = Path("/workspace")
+    FLOWS_DIR       = WORKSPACE / "flows"
+    PROMPTS_DIR     = WORKSPACE / "prompts"
+    CURATED_OUTPUT  = str(WORKSPACE / "curated_traces.csv")
+    SCORES_OUTPUT   = str(WORKSPACE / "scores_report.csv")
+    TRAINING_OUTPUT = str(WORKSPACE / "training_data.csv")
 
-    for _dir in ["./checkpoints/judge", "./checkpoints/generate", "./checkpoints/judge_synthetic"]:
-        shutil.rmtree(_dir, ignore_errors=True)
+    FLOWS_DIR.mkdir(parents=True, exist_ok=True)
+    PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    sessions = p.fetch_sessions()
-    examples_df = p.build_conversation_examples(sessions)
-    curated_df = p.run_judge_flow(examples_df)
-    curated_df.to_csv(p.CURATED_OUTPUT, index=False)
+    # ── Write flow + prompt YAMLs ─────────────────────────────────────────────
+    (FLOWS_DIR / "judge_flow.yaml").write_text("""\
+metadata:
+  id: judge-flow
+  name: Judge Flow
+  version: "1.0.0"
+  dataset_requirements:
+    required_columns: [conversation_str, target_response]
+blocks:
+  - block_type: PromptBuilderBlock
+    block_config:
+      block_name: build_judge_prompt
+      input_cols: [conversation_str, target_response]
+      output_cols: judge_messages
+      prompt_config_path: /workspace/prompts/judge_prompt.yaml
+  - block_type: LLMChatBlock
+    block_config:
+      block_name: judge_llm
+      input_cols: judge_messages
+      output_cols: judge_raw
+      async_mode: true
+      temperature: 0.0
+      max_tokens: 1024
+""")
 
-    if curated_df.empty:
-        print("No examples passed the quality filter. Exiting.")
-        sys.exit(0)
+    (FLOWS_DIR / "generate_flow.yaml").write_text("""\
+metadata:
+  id: generate-flow
+  name: Generate Flow
+  version: "1.0.0"
+  dataset_requirements:
+    required_columns: [conversation_str, target_response]
+blocks:
+  - block_type: PromptBuilderBlock
+    block_config:
+      block_name: build_gen_prompt
+      input_cols: [conversation_str, target_response]
+      output_cols: gen_messages
+      prompt_config_path: /workspace/prompts/generate_prompt.yaml
+  - block_type: LLMChatBlock
+    block_config:
+      block_name: generate_example
+      input_cols: gen_messages
+      output_cols: generated_output
+      async_mode: true
+      temperature: 0.8
+      max_tokens: 8192
+""")
 
-    synthetic_df = p.run_generate_flow(curated_df)
-    synthetic_df = p.judge_synthetic(synthetic_df)
-    p.save_training_csv(curated_df, synthetic_df)
+    (PROMPTS_DIR / "judge_prompt.yaml").write_text("""\
+- role: system
+  content: |
+    You are an expert data quality judge for AI training datasets. Your job is to evaluate
+    a conversation and the assistant's final response, and decide if this is a high-quality
+    training example suitable for fine-tuning a chatbot.
 
-import ast
-import json
-import re
-from pathlib import Path
+    A HIGH QUALITY example (score 7-10) has:
+    - A clear, specific, and realistic user request
+    - A helpful, accurate, and substantive assistant response
+    - A response that directly addresses what was asked
+    - Enough depth and detail to be a useful training example
 
-import mlflow
-import pandas as pd
-from datasets import Dataset
-from sdg_hub import Flow
+    A LOW QUALITY example (score 1-6) has:
+    - Vague, unclear, or trivially simple requests
+    - Empty, very short, or unhelpful responses
+    - Off-topic or irrelevant responses
+    - Responses that appear cut off or incomplete
 
-# ── Configuration (overridden at runtime by sdg_component) ────────────────────
-MLFLOW_TRACKING_URI = ""
-EXPERIMENT_NAME     = ""
-MODEL               = "openai/Qwen3.6-35B-A3B"
-MODEL_URL           = ""
-API_KEY             = "no-key-required"
-NUM_GENERATIONS     = 3
-NUM_OF_TRACES       = 20
-CURATED_OUTPUT = "curated_traces.csv"
-SCORES_OUTPUT = "scores_report.csv"
-TRAINING_OUTPUT = "training_data.csv"
-# ──────────────────────────────────────────────────────────────────────────────
+    Respond ONLY in this exact format — nothing before or after:
+    Score: <integer from 1 to 10>
+    Reason: <one sentence>
 
-SYSTEM_MESSAGE_PATTERNS = [
-    "review the conversation above",
-    "update the skill library",
-    "a pass that does nothing",
-]
+- role: user
+  content: |
+    Conversation:
+    {{ conversation_str }}
 
-FLOWS_DIR = Path(__file__).parent / "flows"
+    Assistant response to judge:
+    {{ target_response }}
+""")
 
+    (PROMPTS_DIR / "generate_prompt.yaml").write_text("""\
+- role: system
+  content: |
+    You are a synthetic training data generator. You will be given a real conversation example.
+    Your job is to generate ONE new, distinct conversation that:
+    - Covers a similar topic or domain as the example
+    - Has a realistic, specific user request a real person might ask
+    - Has a detailed, helpful assistant response that fully addresses the request
+    - Is clearly different from the original — not a paraphrase or minor rewording
 
-def _parse_metadata(raw) -> dict:
-    """Parse trace_metadata whether it arrives as a dict, JSON string, or Python repr."""
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str):
+    Respond ONLY in this exact format, with no extra text before or after:
+    <user_request>
+    [the new user request here]
+    </user_request>
+    <assistant_response>
+    [the new assistant response here]
+    </assistant_response>
+
+- role: user
+  content: |
+    Original conversation:
+    {{ conversation_str }}
+
+    Assistant response:
+    {{ target_response }}
+
+    Generate a new conversation in the same domain.
+""")
+
+    SYSTEM_MESSAGE_PATTERNS = [
+        "review the conversation above",
+        "update the skill library",
+        "a pass that does nothing",
+    ]
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _parse_metadata(raw):
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return ast.literal_eval(raw)
+        return {}
+
+    def _extract_session_id(meta):
+        return meta.get("mlflow.trace.session", "").strip('"').strip("'")
+
+    def _extract_judge_content(raw):
+        if isinstance(raw, str):
+            return raw
         try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return ast.literal_eval(raw)
-    return {}
+            for item in raw:
+                if isinstance(item, dict) and item.get("content"):
+                    return item["content"]
+        except TypeError:
+            pass
+        return str(raw)
 
+    def _is_placeholder(text):
+        clean = re.sub(r'[\s\\n\\r]+', '', text)
+        if len(clean) < 15:
+            return True
+        if re.fullmatch(r'\.{2,}', clean):
+            return True
+        if re.fullmatch(r'\[.*?\]', clean):
+            return True
+        return False
 
-def _extract_session_id(meta: dict) -> str:
-    """Pull the session ID out of trace metadata and strip surrounding quotes."""
-    return meta.get("mlflow.trace.session", "").strip('"').strip("'")
+    def _format_input(messages):
+        lines = []
+        for msg in messages:
+            prefix = "User" if msg["role"] == "user" else "Assistant"
+            lines.append(f"{prefix}: {msg['content']}")
+        return "\n".join(lines)
 
-
-def fetch_sessions() -> dict[str, list[dict]]:
-    """
-    Fetch all OK traces from MLflow, filter noise, and group into sessions.
-    Each session is a list of turn dicts sorted by request_time (ascending).
-    """
-    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    mlflow.set_experiment(EXPERIMENT_NAME)
-    df = mlflow.search_traces(max_results=NUM_OF_TRACES)
-
-    print(df)
-
-    # MLflow Python API uses 'status'; CSV export uses 'state' — handle both
+    # ── Fetch sessions ────────────────────────────────────────────────────────
+    df = mlflow.search_traces(max_results=num_of_traces)
     status_col = "status" if "status" in df.columns else "state"
-
-    sessions: dict[str, list[dict]] = {}
+    sessions = {}
 
     for _, row in df.iterrows():
         if row.get(status_col) != "OK":
             continue
-
-        request = str(row.get("request", "") or "").strip()
+        request  = str(row.get("request",  "") or "").strip()
         response = str(row.get("response", "") or "").strip()
         if not request or not response:
             continue
         if any(p in request.lower() for p in SYSTEM_MESSAGE_PATTERNS):
             continue
-
         meta = _parse_metadata(row.get("trace_metadata") or row.get("request_metadata") or {})
         session_id = _extract_session_id(meta)
         if not session_id:
             continue
-
         sessions.setdefault(session_id, []).append({
             "request_time": row.get("request_time") or row.get("timestamp_ms", 0),
             "request": request,
@@ -155,101 +257,40 @@ def fetch_sessions() -> dict[str, list[dict]]:
 
     for turns in sessions.values():
         turns.sort(key=lambda t: t["request_time"])
+    print(f"Fetched {len(sessions)} sessions")
 
-    print(f"Fetched {len(sessions)} sessions from MLflow")
-    for session_id, turns in sessions.items():
-        print(f"\n  Session: {session_id} ({len(turns)} turn(s))")
-        for i, turn in enumerate(turns):
-            print(f"    Turn {i+1}:")
-            print(f"      request:  {turn['request'][:120]!r}")
-            print(f"      response: {turn['response'][:120]!r}")
-    return sessions
-
-
-def build_conversation_examples(sessions: dict[str, list[dict]]) -> pd.DataFrame:
-    """
-    Unroll each session into sliding-window training examples.
-
-    For a session with turns [t1, t2, t3]:
-      row 1 — messages: [user: t1.request]                         target: t1.response
-      row 2 — messages: [user: t1, asst: t1, user: t2]            target: t2.response
-      row 3 — messages: [user: t1, asst: t1, user: t2, asst: t2, user: t3]  target: t3.response
-
-    Columns produced:
-      session_id       — source session
-      messages         — JSON list of {"role","content"} dicts (the input side)
-      target_response  — the assistant turn the model should produce
-      conversation_str — human-readable version of messages + target, used in prompts
-    """
+    # ── Build examples ────────────────────────────────────────────────────────
     rows = []
     for session_id, turns in sessions.items():
-        history: list[dict] = []
+        history = []
         for turn in turns:
             input_messages = history + [{"role": "user", "content": turn["request"]}]
-
-            # Readable string for judge/generate prompts
-            lines = []
-            for msg in input_messages:
-                prefix = "User:" if msg["role"] == "user" else "Assistant:"
-                lines.append(f"{prefix} {msg['content']}")
-            conversation_str = "\n".join(lines)
-
+            lines = [
+                f"{'User:' if m['role'] == 'user' else 'Assistant:'} {m['content']}"
+                for m in input_messages
+            ]
             rows.append({
-                "session_id": session_id,
-                "messages": json.dumps(input_messages),
+                "session_id":      session_id,
+                "messages":        json.dumps(input_messages),
                 "target_response": turn["response"],
-                "conversation_str": conversation_str,
+                "conversation_str": "\n".join(lines),
             })
-
             history = input_messages + [{"role": "assistant", "content": turn["response"]}]
 
-    df = pd.DataFrame(rows)
-    print(f"Built {len(df)} conversation examples from {len(sessions)} sessions")
-    return df
+    examples_df = pd.DataFrame(rows)
+    print(f"Built {len(examples_df)} examples")
 
+    # ── Judge real examples ───────────────────────────────────────────────────
+    for _dir in ["/workspace/checkpoints/judge", "/workspace/checkpoints/generate", "/workspace/checkpoints/judge_synthetic"]:
+        shutil.rmtree(_dir, ignore_errors=True)
 
-def debug_judge_raw(df: pd.DataFrame):
-    """Run just the prompt-builder + LLM blocks and print judge_raw so we can
-    see exactly what the model returns before the regex tries to parse it."""
-    flow = Flow.from_yaml(str(FLOWS_DIR / "judge_flow.yaml"))
-    flow.set_model_config(model=MODEL, api_base=MODEL_URL, api_key=API_KEY)
+    judge_flow = Flow.from_yaml(str(FLOWS_DIR / "judge_flow.yaml"))
+    judge_flow.set_model_config(model=model_name, api_base=model_url, api_key=api_key)
 
-    result = flow.generate(Dataset.from_pandas(df.head(1))).to_pandas()
-    for i, raw in enumerate(result["judge_raw"]):
-        print(f"\n  judge_raw[{i}]: {raw!r}")
-
-
-def _extract_judge_content(raw) -> str:
-    """Pull the text content out of judge_raw regardless of its format.
-
-    LLMChatBlock can return either a plain string or a numpy array of response
-    dicts (e.g. [{'role': 'assistant', 'content': '...', ...}]). Handle both.
-    """
-    if isinstance(raw, str):
-        return raw
-    try:
-        for item in raw:
-            if isinstance(item, dict) and item.get("content"):
-                return item["content"]
-    except TypeError:
-        pass
-    return str(raw)
-
-
-def run_judge_flow(df: pd.DataFrame) -> pd.DataFrame:
-    """Score each example with an LLM judge; keep those scoring >= 7.
-
-    Uses the 2-block LLM flow for the actual call, then extracts the score
-    and filters in Python (LLMChatBlock returns raw response objects, not plain
-    strings, so SDG Hub's RegexParserBlock can't match directly).
-    """
-
-
-    flow = Flow.from_yaml(str(FLOWS_DIR / "judge_flow.yaml"))
-    flow.set_model_config(model=MODEL, api_base=MODEL_URL, api_key=API_KEY)
-
-    result_df = flow.generate(
-        Dataset.from_pandas(df), checkpoint_dir="./checkpoints/judge", max_concurrency=8
+    result_df = judge_flow.generate(
+        Dataset.from_pandas(examples_df),
+        checkpoint_dir="/workspace/checkpoints/judge",
+        max_concurrency=8,
     ).to_pandas()
 
     result_df["judge_content"] = result_df["judge_raw"].apply(_extract_judge_content)
@@ -260,140 +301,90 @@ def run_judge_flow(df: pd.DataFrame) -> pd.DataFrame:
         lambda t: m.group(1).strip() if (m := re.search(r"Reason:\s*(.+)", t)) else ""
     )
 
-    # Save full scores report before filtering
-    scores_cols = ["session_id", "conversation_str", "target_response", "quality_score", "judge_reason"]
-    scores_df = result_df[scores_cols].copy()
+    scores_df = result_df[["session_id", "conversation_str", "target_response", "quality_score", "judge_reason"]].copy()
     scores_df["included"] = result_df["quality_score"].ge(7)
-    scores_df["request_preview"] = scores_df["conversation_str"].str[:120]
-    scores_df["response_preview"] = scores_df["target_response"].str[:120]
-    scores_df.drop(columns=["conversation_str", "target_response"]).to_csv(SCORES_OUTPUT, index=False)
-    print(f"Scores report saved to: {SCORES_OUTPUT}")
+    scores_df.to_csv(SCORES_OUTPUT, index=False)
 
     before = len(result_df)
-    result_df = result_df[result_df["quality_score"].notna() & (result_df["quality_score"] >= 7)].reset_index(drop=True)
-    print(f"Judge: {before} examples -> {len(result_df)} kept (score >= 7)")
-    return result_df
+    curated_df = result_df[result_df["quality_score"].notna() & (result_df["quality_score"] >= 7)].reset_index(drop=True)
+    print(f"Judge: {before} → {len(curated_df)} kept (score ≥ 7)")
+    curated_df.to_csv(CURATED_OUTPUT, index=False)
 
+    if curated_df.empty:
+        print("No examples passed quality filter.")
+        return
 
-def run_generate_flow(df: pd.DataFrame) -> pd.DataFrame:
-    """Generate NUM_GENERATIONS synthetic examples per high-quality seed.
-
-    Uses a 2-block flow (prompt + LLM) and parses the XML tags in Python,
-    since LLMChatBlock returns raw response objects that TagParserBlock can't handle.
-    """
-    copies = [df.assign(generation_idx=i) for i in range(NUM_GENERATIONS)]
+    # ── Generate synthetic examples ───────────────────────────────────────────
+    copies = [curated_df.assign(generation_idx=i) for i in range(num_generations)]
     seed_df = pd.concat(copies, ignore_index=True)
-    print(f"Generate flow: {len(df)} seeds x{NUM_GENERATIONS} -> {len(seed_df)} to generate")
 
-    flow = Flow.from_yaml(str(FLOWS_DIR / "generate_flow.yaml"))
-    flow.set_model_config(model=MODEL, api_base=MODEL_URL, api_key=API_KEY)
+    gen_flow = Flow.from_yaml(str(FLOWS_DIR / "generate_flow.yaml"))
+    gen_flow.set_model_config(model=model_name, api_base=model_url, api_key=api_key)
 
-    result_df = flow.generate(
-        Dataset.from_pandas(seed_df), checkpoint_dir="./checkpoints/generate", max_concurrency=8
+    gen_result = gen_flow.generate(
+        Dataset.from_pandas(seed_df),
+        checkpoint_dir="/workspace/checkpoints/generate",
+        max_concurrency=8,
     ).to_pandas()
 
     def extract_tag(text, tag):
         m = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.DOTALL)
         return m.group(1).strip() if m else None
 
-    result_df["generated_content"] = result_df["generated_output"].apply(_extract_judge_content)
-    result_df["generated_request"] = result_df["generated_content"].apply(lambda t: extract_tag(t, "user_request"))
-    result_df["generated_response"] = result_df["generated_content"].apply(lambda t: extract_tag(t, "assistant_response"))
+    gen_result["generated_content"]  = gen_result["generated_output"].apply(_extract_judge_content)
+    gen_result["generated_request"]  = gen_result["generated_content"].apply(lambda t: extract_tag(t, "user_request"))
+    gen_result["generated_response"] = gen_result["generated_content"].apply(lambda t: extract_tag(t, "assistant_response"))
 
-    return result_df
+    # ── Judge synthetic examples ──────────────────────────────────────────────
+    synth_judge_df = gen_result.copy()
+    synth_judge_df["conversation_str"] = synth_judge_df["generated_request"].apply(lambda r: f"User: {r}")
+    synth_judge_df["target_response"]  = synth_judge_df["generated_response"]
 
+    synth_flow = Flow.from_yaml(str(FLOWS_DIR / "judge_flow.yaml"))
+    synth_flow.set_model_config(model=model_name, api_base=model_url, api_key=api_key)
 
-def judge_synthetic(df: pd.DataFrame) -> pd.DataFrame:
-    """Run the same LLM judge on synthetic examples; keep those scoring >= 7."""
-    judge_df = df.copy()
-    judge_df["conversation_str"] = judge_df["generated_request"].apply(lambda r: f"User: {r}")
-    judge_df["target_response"] = judge_df["generated_response"]
-
-    flow = Flow.from_yaml(str(FLOWS_DIR / "judge_flow.yaml"))
-    flow.set_model_config(model=MODEL, api_base=MODEL_URL, api_key=API_KEY)
-
-    result_df = flow.generate(
-        Dataset.from_pandas(judge_df), checkpoint_dir="./checkpoints/judge_synthetic", max_concurrency=8
+    synth_result = synth_flow.generate(
+        Dataset.from_pandas(synth_judge_df),
+        checkpoint_dir="/workspace/checkpoints/judge_synthetic",
+        max_concurrency=8,
     ).to_pandas()
 
-    result_df["judge_content"] = result_df["judge_raw"].apply(_extract_judge_content)
-    result_df["quality_score"] = result_df["judge_content"].apply(
+    synth_result["judge_content"] = synth_result["judge_raw"].apply(_extract_judge_content)
+    synth_result["quality_score"] = synth_result["judge_content"].apply(
         lambda t: int(m.group(1)) if (m := re.search(r"Score:\s*(\d+)", t)) else None
     )
 
-    before = len(result_df)
-    result_df = result_df[result_df["quality_score"].notna() & (result_df["quality_score"] >= 7)].reset_index(drop=True)
-    print(f"Synthetic judge: {before} examples -> {len(result_df)} kept (score >= 7)")
-    return result_df
+    before_synth = len(synth_result)
+    synthetic_df = synth_result[synth_result["quality_score"].notna() & (synth_result["quality_score"] >= 7)].reset_index(drop=True)
+    print(f"Synthetic judge: {before_synth} → {len(synthetic_df)} kept (score ≥ 7)")
 
-
-def _is_placeholder(text: str) -> bool:
-    """Return True if text is model-generated filler rather than real content.
-
-    Catches cases like '...', '...\\n', '[request]', '[response]', etc.
-    that appear when the model copies the prompt format instead of generating content.
-    """
-
-    # Collapse all whitespace and escape sequences so we compare the bare text
-    clean = re.sub(r'[\s\\n\\r]+', '', text)
-    if len(clean) < 15:
-        return True
-    if re.fullmatch(r'\.{2,}', clean):          # "...", "....", etc.
-        return True
-    if re.fullmatch(r'\[.*?\]', clean):          # "[request]", "[response]", etc.
-        return True
-    return False
-
-
-def _format_input(messages: list[dict]) -> str:
-    """Format a list of chat messages into a readable input string."""
-    lines = []
-    for msg in messages:
-        prefix = "User" if msg["role"] == "user" else "Assistant"
-        lines.append(f"{prefix}: {msg['content']}")
-    return "\n".join(lines)
-
-
-def save_training_csv(curated_df: pd.DataFrame, synthetic_df: pd.DataFrame):  # noqa: C901
-    """
-    Write training_data.csv with columns: source, input, output.
-
-    Curated rows use the full multi-turn conversation history as input.
-    Synthetic rows are single-turn (generated_request / generated_response).
-    Placeholder outputs ('...', '[response]', etc.) are filtered out.
-    """
-    rows = []
+    # ── Save training_data.csv ────────────────────────────────────────────────
+    training_rows = []
 
     for _, row in curated_df.iterrows():
         try:
-            msgs = json.loads(row["messages"])
+            msgs   = json.loads(row["messages"])
             output = row["target_response"].strip()
             if not _is_placeholder(output):
-                rows.append({
-                    "source": "curated",
-                    "input": _format_input(msgs),
-                    "output": output,
-                })
+                training_rows.append({"source": "curated", "input": _format_input(msgs), "output": output})
         except Exception:
             pass
 
     skipped = 0
     for _, row in synthetic_df.iterrows():
-        req = str(row.get("generated_request") or "").strip()
+        req = re.sub(r"^user:\s*", "", str(row.get("generated_request") or "").strip(), flags=re.IGNORECASE)
         res = str(row.get("generated_response") or "").strip()
-        # Strip any "User:" prefix the model may have included in the request
-        req = re.sub(r"^user:\s*", "", req, flags=re.IGNORECASE)
         if req and res and not _is_placeholder(req) and not _is_placeholder(res):
-            rows.append({
+            training_rows.append({
                 "source": "synthetic",
-                "input": _format_input([{"role": "user", "content": req}]),
+                "input":  _format_input([{"role": "user", "content": req}]),
                 "output": res,
             })
         else:
             skipped += 1
             print(f"  [skipped] req={req!r:.80} | res={res!r:.80}")
 
-    pd.DataFrame(rows).to_csv(TRAINING_OUTPUT, index=False)
-    print(f"Saved {len(rows)} training examples to {TRAINING_OUTPUT}")
+    pd.DataFrame(training_rows).to_csv(TRAINING_OUTPUT, index=False)
+    print(f"Saved {len(training_rows)} training examples to {TRAINING_OUTPUT}")
     if skipped:
         print(f"  ({skipped} synthetic rows skipped — empty or placeholder output)")

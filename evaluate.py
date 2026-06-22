@@ -4,137 +4,111 @@ Holdout evaluation script.
 Loads holdout.csv, generates responses from both the base model and the
 fine-tuned LoRA model, then prints a side-by-side comparison and saves
 results to eval_results.csv.
-
-Usage:
-    python evaluate.py
 """
 
 from kfp.dsl import component
 
 
-@component
-def evaluate_component(base_model: str = "Qwen/Qwen2-0.5B-Instruct"):
+@component(
+    base_image="nvcr.io/nvidia/pytorch:24.01-py3",
+    packages_to_install=["transformers", "peft", "pandas"],
+)
+def evaluate_component(
+    base_model: str = "Qwen/Qwen2-0.5B-Instruct",
+    max_new_tokens: int = 512,
+):
     """KFP component: side-by-side evaluation of base vs fine-tuned model on holdout set."""
-    import evaluate
-    evaluate.BASE_MODEL = base_model
-    evaluate.main()
+    import re
+    import sys
+    from pathlib import Path
 
-import re
-import pandas as pd
-import torch
-from pathlib import Path
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
+    import pandas as pd
+    import torch
+    from peft import PeftModel
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# ── Configuration ──────────────────────────────────────────────────────────────
-HOLDOUT_DATA  = "./holdout.csv"
-BASE_MODEL    = "Qwen/Qwen2-0.5B-Instruct"
-ADAPTER_DIR   = "./lora_adapter"
-OUTPUT_FILE   = "./eval_results.csv"
-MAX_NEW_TOKENS = 512
-# ──────────────────────────────────────────────────────────────────────────────
+    HOLDOUT_DATA = "/workspace/holdout.csv"
+    ADAPTER_DIR  = "/workspace/lora_adapter"
+    OUTPUT_FILE  = "/workspace/eval_results.csv"
 
+    if not Path(HOLDOUT_DATA).exists():
+        print(f"ERROR: {HOLDOUT_DATA} not found")
+        sys.exit(1)
+    if not Path(ADAPTER_DIR).exists():
+        print(f"ERROR: {ADAPTER_DIR} not found")
+        sys.exit(1)
 
-def _parse_input_to_messages(input_str: str) -> list[dict]:
-    messages = []
-    chunks = re.split(r'\n(?=User: |Assistant: )', input_str.strip())
-    for chunk in chunks:
-        if chunk.startswith("User: "):
-            messages.append({"role": "user", "content": chunk[6:].strip()})
-        elif chunk.startswith("Assistant: "):
-            messages.append({"role": "assistant", "content": chunk[11:].strip()})
-    return messages
+    def _parse_input_to_messages(input_str):
+        messages = []
+        for chunk in re.split(r'\n(?=User: |Assistant: )', input_str.strip()):
+            if chunk.startswith("User: "):
+                messages.append({"role": "user", "content": chunk[6:].strip()})
+            elif chunk.startswith("Assistant: "):
+                messages.append({"role": "assistant", "content": chunk[11:].strip()})
+        return messages
 
-
-def build_prompt(input_str: str, tokenizer) -> str:
-    """Build a generation prompt from the conversation history (no final assistant turn)."""
-    messages = _parse_input_to_messages(input_str)
-    return tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-
-
-def generate(prompt: str, model, tokenizer) -> str:
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-    with torch.no_grad():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=MAX_NEW_TOKENS,
-            do_sample=False,
-            temperature=None,
-            top_p=None,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-    # Decode only the newly generated tokens
-    new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]
-    return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
-
-
-def load_base_model(tokenizer):
     has_gpu = torch.cuda.is_available()
-    return AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL,
+
+    tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    def build_prompt(input_str):
+        messages = _parse_input_to_messages(input_str)
+        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+    def generate(prompt, model):
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        with torch.no_grad():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                temperature=None,
+                top_p=None,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]
+        return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+
+    print("Loading base model ...")
+    base_model_obj = AutoModelForCausalLM.from_pretrained(
+        base_model,
         device_map="auto" if has_gpu else None,
         torch_dtype=torch.bfloat16 if has_gpu else None,
         trust_remote_code=True,
     )
-
-
-def main():
-    if not Path(HOLDOUT_DATA).exists():
-        print(f"ERROR: {HOLDOUT_DATA} not found. Run fine_tune.py first.")
-        return
-    if not Path(ADAPTER_DIR).exists():
-        print(f"ERROR: {ADAPTER_DIR} not found. Run fine_tune.py first.")
-        return
-
-    df = pd.read_csv(HOLDOUT_DATA)
-    print(f"Evaluating {len(df)} holdout examples\n")
-
-    print("Loading tokenizer ...")
-    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    print("Loading base model ...")
-    base_model = load_base_model(tokenizer)
-    base_model.eval()
+    base_model_obj.eval()
 
     print("Loading fine-tuned model ...")
-    finetuned_model = PeftModel.from_pretrained(base_model, ADAPTER_DIR)
+    finetuned_model = PeftModel.from_pretrained(base_model_obj, ADAPTER_DIR)
     finetuned_model.eval()
+
+    df = pd.read_csv(HOLDOUT_DATA)
+    print(f"Evaluating {len(df)} holdout examples")
 
     results = []
     for i, row in df.iterrows():
-        print(f"\n{'='*60}")
-        print(f"Example {i+1}/{len(df)}  (source: {row['source']})")
-        print(f"{'='*60}")
-
-        prompt = build_prompt(row["input"], tokenizer)
-
-        # Show the last user turn as context
-        messages = _parse_input_to_messages(row["input"])
+        messages  = _parse_input_to_messages(row["input"])
         last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
-        print(f"\nUser: {last_user[:200]}{'...' if len(last_user) > 200 else ''}")
+        prompt    = build_prompt(row["input"])
 
-        print("\n--- Reference answer ---")
-        print(row["output"][:400] + ("..." if len(str(row["output"])) > 400 else ""))
+        base_resp = generate(prompt, base_model_obj)
+        ft_resp   = generate(prompt, finetuned_model)
 
-        print("\n--- Base model ---")
-        base_response = generate(prompt, base_model, tokenizer)
-        print(base_response[:400] + ("..." if len(base_response) > 400 else ""))
-
-        print("\n--- Fine-tuned model ---")
-        ft_response = generate(prompt, finetuned_model, tokenizer)
-        print(ft_response[:400] + ("..." if len(ft_response) > 400 else ""))
+        print(f"\n[{i+1}/{len(df)}] source={row['source']}")
+        print(f"  User       : {last_user[:120]}")
+        print(f"  Reference  : {str(row['output'])[:120]}")
+        print(f"  Base model : {base_resp[:120]}")
+        print(f"  Fine-tuned : {ft_resp[:120]}")
 
         results.append({
-            "source": row["source"],
-            "user_input": last_user,
-            "reference": row["output"],
-            "base_response": base_response,
-            "finetuned_response": ft_response,
+            "source":             row["source"],
+            "user_input":         last_user,
+            "reference":          row["output"],
+            "base_response":      base_resp,
+            "finetuned_response": ft_resp,
         })
 
     pd.DataFrame(results).to_csv(OUTPUT_FILE, index=False)
-    print(f"\nResults saved to {OUTPUT_FILE}")
+    print(f"\nEval results saved to {OUTPUT_FILE}")
