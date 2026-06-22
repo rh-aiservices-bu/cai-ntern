@@ -13,11 +13,35 @@ Requirements:
     pip install sdg-hub datasets pandas mlflow
 """
 
+from kfp.dsl import component
+
+
+@component
+def sdg_component():
+    """KFP component: run the full SDG pipeline (fetch → judge → generate → save)."""
+    import shutil
+    import sys
+    import sdg_pipeline.pipeline as p
+
+    for _dir in ["./checkpoints/judge", "./checkpoints/generate", "./checkpoints/judge_synthetic"]:
+        shutil.rmtree(_dir, ignore_errors=True)
+
+    sessions = p.fetch_sessions()
+    examples_df = p.build_conversation_examples(sessions)
+    curated_df = p.run_judge_flow(examples_df)
+    curated_df.to_csv(p.CURATED_OUTPUT, index=False)
+
+    if curated_df.empty:
+        print("No examples passed the quality filter. Exiting.")
+        sys.exit(0)
+
+    synthetic_df = p.run_generate_flow(curated_df)
+    synthetic_df = p.judge_synthetic(synthetic_df)
+    p.save_training_csv(curated_df, synthetic_df)
+
 import ast
 import json
 import re
-import shutil
-import sys
 from pathlib import Path
 import os
 
@@ -36,10 +60,6 @@ os.environ["MLFLOW_WORKSPACE"] = MLFLOW_WORKSPACE
 os.environ["MLFLOW_TRACKING_TOKEN"] = "<TRACKING_TOKEN>"
 EXPERIMENT_NAME = "<EXPERIMENT_NAME>"
 
-mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-mlflow.set_experiment(EXPERIMENT_NAME)
-# client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
-print(f"✓ Connected to MLflow — workspace: {MLFLOW_WORKSPACE}, experiment: {EXPERIMENT_NAME}")
 MODEL = "openai/Qwen3.6-35B-A3B"
 MODEL_URL = "<MODEL_URL>"
 API_KEY = "<API_KEY>"
@@ -82,6 +102,7 @@ def fetch_sessions() -> dict[str, list[dict]]:
     Each session is a list of turn dicts sorted by request_time (ascending).
     """
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(EXPERIMENT_NAME)
     df = mlflow.search_traces(max_results=NUM_OF_TRACES)
 
     print(df)
@@ -351,39 +372,9 @@ def save_training_csv(curated_df: pd.DataFrame, synthetic_df: pd.DataFrame):  # 
             })
         else:
             skipped += 1
-            content = str(row.get("generated_content") or "")
             print(f"  [skipped] req={req!r:.80} | res={res!r:.80}")
 
     pd.DataFrame(rows).to_csv(TRAINING_OUTPUT, index=False)
     print(f"Saved {len(rows)} training examples to {TRAINING_OUTPUT}")
     if skipped:
         print(f"  ({skipped} synthetic rows skipped — empty or placeholder output)")
-
-
-if __name__ == "__main__":
-    for _dir in ["./checkpoints/judge", "./checkpoints/generate", "./checkpoints/judge_synthetic"]:
-        shutil.rmtree(_dir, ignore_errors=True)
-
-    print("\n=== Step 1: Fetching sessions from MLflow ===")
-    sessions = fetch_sessions()
-
-    print("\n=== Step 2: Building conversation examples ===")
-    examples_df = build_conversation_examples(sessions)
-
-    print("\n=== Step 3: LLM judging for quality ===")
-    curated_df = run_judge_flow(examples_df)
-    curated_df.to_csv(CURATED_OUTPUT, index=False)
-    print(f"Curated examples saved to: {CURATED_OUTPUT}")
-
-    if curated_df.empty:
-        print("No examples passed the quality filter. Exiting.")
-        sys.exit(0)
-
-    print("\n=== Step 4: Generating synthetic training examples ===")
-    synthetic_df = run_generate_flow(curated_df)
-
-    print("\n=== Step 5: Judging synthetic examples for quality ===")
-    synthetic_df = judge_synthetic(synthetic_df)
-
-    print("\n=== Step 6: Saving training data ===")
-    save_training_csv(curated_df, synthetic_df)

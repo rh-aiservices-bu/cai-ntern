@@ -9,6 +9,15 @@ Usage:
     python evaluate.py
 """
 
+from kfp.dsl import component
+
+
+@component
+def evaluate_component():
+    """KFP component: side-by-side evaluation of base vs fine-tuned model on holdout set."""
+    import evaluate
+    evaluate.main()
+
 import re
 import pandas as pd
 import torch
@@ -128,7 +137,3 @@ def main():
 
     pd.DataFrame(results).to_csv(OUTPUT_FILE, index=False)
     print(f"\nResults saved to {OUTPUT_FILE}")
-
-
-if __name__ == "__main__":
-    main()

@@ -8,6 +8,15 @@ Requirements:
     pip install transformers peft datasets accelerate bitsandbytes
 """
 
+from kfp.dsl import component
+
+
+@component
+def fine_tune_component():
+    """KFP component: LoRA fine-tune on training_data.csv produced by sdg_component."""
+    import fine_tune
+    fine_tune.main()
+
 import re
 import sys
 import pandas as pd
@@ -223,7 +232,3 @@ def main():
     tokenizer.save_pretrained(OUTPUT_DIR)
     print("Done. To use the adapter, load the base model and call:")
     print(f"  model = PeftModel.from_pretrained(base_model, '{OUTPUT_DIR}')")
-
-
-if __name__ == "__main__":
-    main()
