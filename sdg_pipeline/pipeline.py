@@ -3,11 +3,11 @@ SDG Hub pipeline: fetch sessions from MLflow, build conversation training exampl
 judge quality with an LLM, and generate synthetic fine-tuning data.
 
 Steps:
-  1. Fetch     — pull traces from MLflow and group them into sessions
-  2. Unroll    — for each session, create sliding-window conversation examples
-  3. Judge     — LLM scores each example 1-10; keep those >= 7
-  4. Generate  — produce NUM_GENERATIONS new examples per high-quality seed
-  5. Save      — write curated examples to CSV and synthetic data to JSONL
+  1. Fetch     - pull traces from MLflow and group them into sessions
+  2. Unroll    - for each session, create sliding-window conversation examples
+  3. Judge     - LLM scores each example 1-10; keep those >= 7
+  4. Generate  - produce NUM_GENERATIONS new examples per high-quality seed
+  5. Save      - write curated examples to CSV and synthetic data to JSONL
 
 Requirements:
     pip install sdg-hub datasets pandas mlflow
@@ -29,7 +29,7 @@ def sdg_component(
     num_generations: int = 3,
     num_of_traces: int = 20,
 ):
-    """KFP component: fetch MLflow traces → judge → generate synthetic data → save."""
+    """KFP component: fetch MLflow traces -> judge -> generate synthetic data -> save."""
     import ast
     import json
     import os
@@ -141,7 +141,7 @@ blocks:
     - Off-topic or irrelevant responses
     - Responses that appear cut off or incomplete
 
-    Respond ONLY in this exact format — nothing before or after:
+    Respond ONLY in this exact format - nothing before or after:
     Score: <integer from 1 to 10>
     Reason: <one sentence>
 
@@ -162,7 +162,7 @@ blocks:
     - Covers a similar topic or domain as the example
     - Has a realistic, specific user request a real person might ask
     - Has a detailed, helpful assistant response that fully addresses the request
-    - Is clearly different from the original — not a paraphrase or minor rewording
+    - Is clearly different from the original - not a paraphrase or minor rewording
 
     Respond ONLY in this exact format, with no extra text before or after:
     <user_request>
@@ -307,7 +307,7 @@ blocks:
 
     before = len(result_df)
     curated_df = result_df[result_df["quality_score"].notna() & (result_df["quality_score"] >= 7)].reset_index(drop=True)
-    print(f"Judge: {before} → {len(curated_df)} kept (score ≥ 7)")
+    print(f"Judge: {before} -> {len(curated_df)} kept (score >= 7)")
     curated_df.to_csv(CURATED_OUTPUT, index=False)
 
     if curated_df.empty:
@@ -356,7 +356,7 @@ blocks:
 
     before_synth = len(synth_result)
     synthetic_df = synth_result[synth_result["quality_score"].notna() & (synth_result["quality_score"] >= 7)].reset_index(drop=True)
-    print(f"Synthetic judge: {before_synth} → {len(synthetic_df)} kept (score ≥ 7)")
+    print(f"Synthetic judge: {before_synth} -> {len(synthetic_df)} kept (score >= 7)")
 
     # ── Save training_data.csv ────────────────────────────────────────────────
     training_rows = []
@@ -387,4 +387,4 @@ blocks:
     pd.DataFrame(training_rows).to_csv(TRAINING_OUTPUT, index=False)
     print(f"Saved {len(training_rows)} training examples to {TRAINING_OUTPUT}")
     if skipped:
-        print(f"  ({skipped} synthetic rows skipped — empty or placeholder output)")
+        print(f"  ({skipped} synthetic rows skipped - empty or placeholder output)")

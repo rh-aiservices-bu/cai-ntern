@@ -1,5 +1,5 @@
 """
-Kubeflow Pipeline: SDG → Fine-Tune → Evaluate
+Kubeflow Pipeline: SDG -> Fine-Tune -> Evaluate
 
 Components are imported directly from the existing scripts.
 Each step runs in its own container on the cluster.
@@ -18,8 +18,8 @@ from evaluate import evaluate_component
 
 
 @dsl.pipeline(
-    name="IT Help Desk — SDG + Fine-Tune + Evaluate",
-    description="Fetch traces → judge → generate 3x synthetic data → LoRA fine-tune → evaluate",
+    name="IT Help Desk - SDG + Fine-Tune + Evaluate",
+    description="Fetch traces, judge quality, generate 3x synthetic data, LoRA fine-tune, evaluate",
 )
 def ithelpdesk_pipeline(
     model_url: str,
@@ -37,7 +37,7 @@ def ithelpdesk_pipeline(
     learning_rate: float = 2e-4,
     max_new_tokens: int = 512,
 ):
-    # Shared PVC — carries all artifacts between steps
+    # Shared PVC - carries all artifacts between steps
     pvc = kubernetes.CreatePVC(
         pvc_name_suffix="-ithelpdesk-pvc",
         access_modes=["ReadWriteOnce"],
@@ -105,7 +105,7 @@ if __name__ == "__main__":
     client.create_run_from_pipeline_func(
         ithelpdesk_pipeline,
         arguments={
-            "model_url": "<MODEL_URL>",  # 👈 set your vLLM endpoint here
+            "model_url": "<MODEL_URL>",  # set your vLLM endpoint here
         },
         experiment_name="it-helpdesk-sdg-finetune",
         enable_caching=False,

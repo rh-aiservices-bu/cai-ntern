@@ -84,7 +84,7 @@ def fine_tune_component(
     holdout_df  = df.sample(frac=HOLDOUT_SPLIT, random_state=42)
     trainval_df = df.drop(holdout_df.index).reset_index(drop=True)
     holdout_df.to_csv(HOLDOUT_OUTPUT, index=False)
-    print(f"Holdout: {len(holdout_df)} examples → {HOLDOUT_OUTPUT}")
+    print(f"Holdout: {len(holdout_df)} examples -> {HOLDOUT_OUTPUT}")
 
     trainval_df["text"] = trainval_df.apply(format_example, axis=1)
     dataset = Dataset.from_pandas(trainval_df[["text"]], preserve_index=False)
