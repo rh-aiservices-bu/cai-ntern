@@ -19,8 +19,6 @@ from kfp.dsl import component
 @component
 def sdg_component(
     mlflow_tracking_uri: str,
-    mlflow_workspace: str,
-    mlflow_tracking_token: str,
     experiment_name: str,
     model_url: str,
     api_key: str = "no-key-required",
@@ -29,10 +27,21 @@ def sdg_component(
     import os
     import shutil
     import sys
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+    os.environ["MLFLOW_TRACKING_AUTH"]       = "kubernetes"
     os.environ["MLFLOW_TRACKING_INSECURE_TLS"] = "true"
-    os.environ["MLFLOW_WORKSPACE"]      = mlflow_workspace
-    os.environ["MLFLOW_TRACKING_TOKEN"] = mlflow_tracking_token
+
+    namespace_path = "/run/secrets/kubernetes.io/serviceaccount/namespace"
+    if os.path.exists(namespace_path):
+        with open(namespace_path) as f:
+            os.environ["MLFLOW_WORKSPACE"] = f.read().strip()
+
+    token_path = "/run/secrets/kubernetes.io/serviceaccount/token"
+    if os.path.exists(token_path):
+        with open(token_path) as f:
+            os.environ["MLFLOW_TRACKING_TOKEN"] = f.read().strip()
 
     import sdg_pipeline.pipeline as p
 

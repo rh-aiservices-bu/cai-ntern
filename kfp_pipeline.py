@@ -22,18 +22,14 @@ local.init(runner=local.SubprocessRunner())
     description="Fetch traces → judge → generate 3x synthetic data → LoRA fine-tune → evaluate",
 )
 def ithelpdesk_pipeline(
-    mlflow_tracking_uri: str,
-    mlflow_workspace: str,
-    mlflow_tracking_token: str,
-    experiment_name: str,
-    model_url: str,
+    mlflow_tracking_uri: str = "https://mlflow.redhat-ods-applications.svc.cluster.local:8443",
+    experiment_name: str = "canopy-experiment",
+    model_url: str = "<MODEL_URL>",
     api_key: str = "no-key-required",
     base_model: str = "Qwen/Qwen2-0.5B-Instruct",
 ):
     sdg_task = sdg_component(
         mlflow_tracking_uri=mlflow_tracking_uri,
-        mlflow_workspace=mlflow_workspace,
-        mlflow_tracking_token=mlflow_tracking_token,
         experiment_name=experiment_name,
         model_url=model_url,
         api_key=api_key,
@@ -47,10 +43,4 @@ def ithelpdesk_pipeline(
 
 
 if __name__ == "__main__":
-    ithelpdesk_pipeline(
-        mlflow_tracking_uri="<MLFLOW_TRACKING_URI>",
-        mlflow_workspace="<MLFLOW_WORKSPACE>",
-        mlflow_tracking_token="<MLFLOW_TRACKING_TOKEN>",
-        experiment_name="<EXPERIMENT_NAME>",
-        model_url="<MODEL_URL>",
-    )
+    ithelpdesk_pipeline(model_url="<MODEL_URL>")
