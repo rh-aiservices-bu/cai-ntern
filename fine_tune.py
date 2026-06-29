@@ -12,7 +12,7 @@ from kfp.dsl import component
 
 
 @component(
-    base_image="nvcr.io/nvidia/pytorch:24.01-py3",
+    base_image="registry.redhat.io/rhoai/odh-pipeline-runtime-pytorch-cuda-py312-rhel9@sha256:74e130efd4386125d852a69080b61a591899e068b0296814e3c99cc5fe2e44a2",
     packages_to_install=["transformers", "peft", "datasets", "accelerate", "bitsandbytes", "pandas"],
 )
 def fine_tune_component(
@@ -50,6 +50,7 @@ def fine_tune_component(
     HOLDOUT_SPLIT  = 0.1
     LORA_DROPOUT   = 0.05
     TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    LOAD_IN_4BIT   = False
 
     if not Path(TRAINING_DATA).exists():
         print(f"ERROR: {TRAINING_DATA} not found")
@@ -64,19 +65,21 @@ def fine_tune_component(
                 messages.append({"role": "assistant", "content": chunk[11:].strip()})
         return messages
 
+    def format_example(row, tokenizer):
+        messages = _parse_input_to_messages(row["input"])
+        messages.append({"role": "assistant", "content": row["output"]})
+        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+
     has_gpu = torch.cuda.is_available()
-    print(f"Device: {'GPU (' + torch.cuda.get_device_name(0) + ')' if has_gpu else 'CPU'}")
+    use_4bit = LOAD_IN_4BIT and has_gpu
+    print(f"Device     : {'GPU (' + torch.cuda.get_device_name(0) + ')' if has_gpu else 'CPU'}")
+    print(f"4-bit quant: {use_4bit}")
 
     tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
     tokenizer.model_max_length = MAX_SEQ_LENGTH
-
-    def format_example(row):
-        messages = _parse_input_to_messages(row["input"])
-        messages.append({"role": "assistant", "content": row["output"]})
-        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
 
     df = pd.read_csv(TRAINING_DATA)
     print(f"Loaded {len(df)} examples  ({df['source'].value_counts().to_dict()})")
@@ -86,7 +89,7 @@ def fine_tune_component(
     holdout_df.to_csv(HOLDOUT_OUTPUT, index=False)
     print(f"Holdout: {len(holdout_df)} examples -> {HOLDOUT_OUTPUT}")
 
-    trainval_df["text"] = trainval_df.apply(format_example, axis=1)
+    trainval_df["text"] = trainval_df.apply(lambda row: format_example(row, tokenizer), axis=1)
     dataset = Dataset.from_pandas(trainval_df[["text"]], preserve_index=False)
     split    = dataset.train_test_split(test_size=EVAL_SPLIT, seed=42)
 
@@ -97,19 +100,23 @@ def fine_tune_component(
     val_ds   = split["test"].map(tokenize,  batched=True, remove_columns=["text"])
     print(f"Train: {len(train_ds)}  Val: {len(val_ds)}")
 
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-    ) if has_gpu else None
+    bnb_config = (
+        BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
+        if use_4bit
+        else None
+    )
 
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
         quantization_config=bnb_config,
         device_map="auto" if has_gpu else None,
         trust_remote_code=True,
-        dtype=torch.bfloat16 if (has_gpu and not bnb_config) else None,
+        dtype=torch.bfloat16 if (has_gpu and not use_4bit) else None,
     )
     model.config.use_cache = False
 

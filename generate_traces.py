@@ -1,5 +1,5 @@
 """
-Generate 100 example traces and log them to MLflow via autolog.
+Generate 200 example traces and log them to MLflow via autolog.
 
 Each prompt is sent as a single-turn chat completion. MLflow autolog
 captures every request/response as a trace automatically.
@@ -54,7 +54,7 @@ SYSTEM_PROMPT = (
     "and get access to the tools and systems they need to do their work."
 )
 
-# ── 100 example prompts ────────────────────────────────────────────────────────
+# ── 200 example prompts ────────────────────────────────────────────────────────
 PROMPTS = [
     # Password & account access
     "I forgot my Windows password and I'm locked out of my laptop. What do I do?",
@@ -166,9 +166,119 @@ PROMPTS = [
     "The payroll system is down and we have a submission deadline in two hours.",
     "How do I submit a P1 incident ticket for a business-critical system outage?",
     "My team's video call service is down right before a client demo. What are my options?",
+    # Printing & peripherals
+    "My printer shows as offline even though it's powered on and connected to the network.",
+    "How do I add the floor printer to my Windows laptop without admin rights?",
+    "My print jobs are stuck in the queue and won't clear even after restarting the spooler.",
+    "I need to print a confidential document securely. Does IT support follow-me printing?",
+    "The color printer is only printing in black and white. How do I fix the settings?",
+    "My external mouse stops working after the laptop wakes from sleep.",
+    "The barcode scanner I use for inventory stopped being recognized by the app after a Windows update.",
+    "How do I connect a Bluetooth keyboard to my work laptop without admin rights?",
+    "My docking station's audio output stopped working after plugging in a second monitor.",
+    "The label printer on the warehouse floor is printing garbled text. What should I check?",
+    # Mobile device management
+    "How do I enroll my iPhone in the company MDM so I can access corporate email?",
+    "My Android phone lost access to corporate apps after I updated the OS. How do I fix this?",
+    "I'm getting a 'Device not compliant' error when trying to open Teams on my phone.",
+    "How do I remotely wipe my company phone if it gets lost or stolen?",
+    "Can I use my personal phone for work apps, or do I need a company-issued device?",
+    "My MDM enrollment keeps failing with error code 0x80180014. What does that mean?",
+    "How do I separate my personal and work data on a BYOD device?",
+    "The company email profile on my phone disappeared after I restored from backup.",
+    "I switched to a new phone. How do I transfer my corporate apps and access?",
+    "My phone's camera is blocked by MDM policy. Is there an exception process for field work?",
+    # MFA & authentication
+    "My Microsoft Authenticator app isn't generating codes anymore. How do I recover access?",
+    "I got a new phone and lost access to my MFA app. How do I re-enroll?",
+    "I'm being asked for MFA every time I open an app, even ones I've used before. Is that normal?",
+    "How do I add a backup MFA method in case I lose my phone?",
+    "The MFA push notification isn't arriving on my phone. What should I try?",
+    "Can I use a hardware security key instead of my phone for MFA?",
+    "I accidentally approved an MFA request I didn't initiate. What should I do?",
+    "How do I set up MFA for a shared team account that multiple people need to access?",
+    "My MFA token codes are being rejected as expired even though my phone time is correct.",
+    "I'm traveling abroad and my MFA SMS isn't arriving. What alternatives do I have?",
+    # Video conferencing & collaboration tools
+    "My Teams background blur option is greyed out. How do I enable it?",
+    "I can't hear audio in Teams meetings even though my speakers work in other apps.",
+    "How do I schedule a Teams meeting for someone else as their delegate?",
+    "The Zoom client is blocked on the corporate network. Is there an approved alternative?",
+    "My screen share in Teams shows a black screen to other participants. How do I fix it?",
+    "How do I record a Teams meeting and where does the recording get saved?",
+    "I need to host a webinar for 500 external attendees. What platform should I use?",
+    "My Teams status always shows 'Away' even when I'm actively working. How do I fix it?",
+    "How do I set up a Teams channel for a cross-company project with external guests?",
+    "The meeting room TV isn't showing the Teams meeting when I start it from my laptop.",
+    # Software licensing & procurement
+    "How do I find out what software licenses are assigned to my account?",
+    "My Adobe license expired mid-project. How do I get it renewed urgently?",
+    "I need a one-time license for a tool for a specific project. Can IT procure that?",
+    "How do I transfer a software license from a departing employee to a new one?",
+    "The software I need isn't in the company catalog. What's the approval process to add it?",
+    "I'm getting a 'license limit reached' error in MATLAB. Who manages those licenses?",
+    "How do I check how many unused licenses we have for a particular tool?",
+    "Can I use an open-source alternative instead of the licensed software?",
+    "I need to run software that requires a specific Windows version we don't support. What are my options?",
+    "My Figma license was downgraded to the free tier without notice. How do I get it restored?",
+    # Developer tools & environments
+    "How do I get access to the company GitHub organization?",
+    "I need elevated permissions in our AWS dev account for a new project. What's the process?",
+    "My local Docker containers can't reach internal services because of the corporate proxy.",
+    "How do I configure npm to work behind the corporate proxy without disabling SSL?",
+    "I need a dev sandbox environment with production-like data for testing. How do I request one?",
+    "My SSH key was rejected when connecting to the internal GitLab server after a password change.",
+    "How do I request access to the Kubernetes cluster for our team's staging namespace?",
+    "The CI/CD pipeline is failing because it can't pull a base image from our private registry.",
+    "I need to set up a local certificate authority for testing HTTPS locally. Is that allowed?",
+    "How do I get a read-only database connection to the production replica for reporting?",
+    # Compliance & audit
+    "I received an audit request asking for my email records from the past 12 months. What do I do?",
+    "How do I know if a file I'm working with is subject to data retention policies?",
+    "I need to export all communications for a specific project for a legal hold. Who handles that?",
+    "What's the process if I accidentally store regulated data (PII, PCI) in an unauthorized location?",
+    "How long does IT keep deleted files before they're permanently removed?",
+    "I need to demonstrate to an auditor that our systems have audit logging enabled. Who can help?",
+    "Can I use a personal USB drive to transfer files between my work laptop and a client site?",
+    "What's the data classification policy and how do I label sensitive documents correctly?",
+    "I'm onboarding a new vendor and they're asking for access to our system logs. Is that allowed?",
+    "How do I request a report of all the systems and data my account has accessed in the last 90 days?",
+    # Disaster recovery & business continuity
+    "What's the RTO for our CRM system if there's a major outage?",
+    "I need to understand what data gets backed up and how often for our file shares.",
+    "My team's critical data was stored only on a local drive that failed. Is there any recovery option?",
+    "How do I test that my backups are actually restorable before a real incident happens?",
+    "What should I do if a ransomware attack encrypts files on my laptop?",
+    "Is there a business continuity plan I should follow if the main office is inaccessible?",
+    "How do I access my work files if the VPN is down during an outage?",
+    "Who do I contact to initiate disaster recovery procedures for our database servers?",
+    "I need to set up automated backups for a new server we're deploying. What tool should I use?",
+    "How long are email backups retained and how do I request a restore?",
+    # Accessibility & assistive technology
+    "I need screen reader software for my work laptop. How do I request it through IT?",
+    "My Windows magnifier settings reset after every reboot. How do I make them persistent?",
+    "How do I request a keyboard with larger keys or a high-contrast display for accessibility reasons?",
+    "The captioning feature in Teams isn't working for me. How do I enable it?",
+    "I need a single-switch input device due to a motor disability. What's the procurement process?",
+    "Can IT install a custom color filter or theme on my work laptop for visual impairment?",
+    "My assistive technology software conflicts with the endpoint security agent. How do I get an exception?",
+    "How do I request an ergonomic assessment for my home office setup?",
+    "The company intranet isn't compatible with my screen reader. Who do I report this accessibility issue to?",
+    "I need to join a Teams meeting but I'm deaf. How do I enable live captions and transcripts?",
+    # IT service management & self-service
+    "Where do I find the IT self-service portal to submit a request without calling the help desk?",
+    "How do I check the status of a ticket I submitted last week?",
+    "Can I reopen a closed IT ticket if the issue comes back?",
+    "How do I see all the IT services available to me and what I'm eligible to request?",
+    "What's the expected SLA for a standard software access request?",
+    "I submitted a request three days ago and haven't heard back. How do I follow up without creating a duplicate ticket?",
+    "How do I request IT support for a planned event happening next month?",
+    "Is there a knowledge base or FAQ where I can troubleshoot common issues myself before calling IT?",
+    "How do I give feedback about a recent IT support experience?",
+    "Can I schedule a callback from IT support instead of waiting on hold?",
 ]
 
-assert len(PROMPTS) == 100, f"Expected 100 prompts, got {len(PROMPTS)}"
+assert len(PROMPTS) == 200, f"Expected 200 prompts, got {len(PROMPTS)}"
 
 
 def send_prompt(prompt: str, session_id: str, index: int) -> str:
@@ -200,7 +310,7 @@ def main():
         mlflow.log_param("model", MODEL_NAME)
 
         for i, prompt in enumerate(PROMPTS, start=1):
-            print(f"[{i:3d}/100] {prompt[:80]}")
+            print(f"[{i:3d}/200] {prompt[:80]}")
             try:
                 response = send_prompt(prompt, session_id, i)
                 print(f"         -> {response[:100]!r}")

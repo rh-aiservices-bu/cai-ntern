@@ -10,8 +10,8 @@ from kfp.dsl import component
 
 
 @component(
-    base_image="nvcr.io/nvidia/pytorch:24.01-py3",
-    packages_to_install=["transformers", "peft", "pandas"],
+    base_image="registry.redhat.io/rhoai/odh-pipeline-runtime-pytorch-cuda-py312-rhel9@sha256:74e130efd4386125d852a69080b61a591899e068b0296814e3c99cc5fe2e44a2",
+    packages_to_install=["transformers", "peft", "bitsandbytes", "pandas"],
 )
 def evaluate_component(
     base_model: str = "Qwen/Qwen2-0.5B-Instruct",
@@ -83,6 +83,17 @@ def evaluate_component(
     print("Loading fine-tuned model ...")
     finetuned_model = PeftModel.from_pretrained(base_model_obj, ADAPTER_DIR)
     finetuned_model.eval()
+
+    # Verify the adapter is loaded and has non-zero weights
+    adapter_params = {n: p for n, p in finetuned_model.named_parameters() if "lora_" in n}
+    nonzero = sum(1 for p in adapter_params.values() if p.abs().max().item() > 1e-6)
+    total = len(adapter_params)
+    print(f"Adapter check: {nonzero}/{total} LoRA param tensors are non-zero")
+    if nonzero == 0:
+        print("WARNING: all adapter weights are zero — fine-tuning had no effect")
+    else:
+        sample_name, sample_param = next(iter(adapter_params.items()))
+        print(f"  Sample param '{sample_name}': max={sample_param.abs().max().item():.6f} mean={sample_param.abs().mean().item():.6f}")
 
     df = pd.read_csv(HOLDOUT_DATA)
     print(f"Evaluating {len(df)} holdout examples")
