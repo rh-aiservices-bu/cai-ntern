@@ -80,38 +80,34 @@ def evaluate_component(
     )
     base_model_obj.eval()
 
+    df = pd.read_csv(HOLDOUT_DATA)
+    print(f"Evaluating {len(df)} holdout examples")
+
+    # Generate base model responses BEFORE wrapping with PeftModel.
+    # PeftModel.from_pretrained modifies base_model_obj in place, so any
+    # generate() call after that point will include LoRA weights regardless
+    # of which object you call it on.
+    print("Generating base model responses ...")
+    prompts = [build_prompt(row["input"]) for _, row in df.iterrows()]
+    base_responses = [generate(p, base_model_obj) for p in prompts]
+
     print("Loading fine-tuned model ...")
     finetuned_model = PeftModel.from_pretrained(base_model_obj, ADAPTER_DIR)
     finetuned_model.eval()
-
-    # Verify the adapter is loaded and has non-zero weights
-    adapter_params = {n: p for n, p in finetuned_model.named_parameters() if "lora_" in n}
-    nonzero = sum(1 for p in adapter_params.values() if p.abs().max().item() > 1e-6)
-    total = len(adapter_params)
-    print(f"Adapter check: {nonzero}/{total} LoRA param tensors are non-zero")
-    if nonzero == 0:
-        print("WARNING: all adapter weights are zero — fine-tuning had no effect")
-    else:
-        sample_name, sample_param = next(iter(adapter_params.items()))
-        print(f"  Sample param '{sample_name}': max={sample_param.abs().max().item():.6f} mean={sample_param.abs().mean().item():.6f}")
-
-    df = pd.read_csv(HOLDOUT_DATA)
-    print(f"Evaluating {len(df)} holdout examples")
 
     results = []
     for i, row in df.iterrows():
         messages  = _parse_input_to_messages(row["input"])
         last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
-        prompt    = build_prompt(row["input"])
 
-        base_resp = generate(prompt, base_model_obj)
-        ft_resp   = generate(prompt, finetuned_model)
+        base_resp = base_responses[i]
+        ft_resp   = generate(prompts[i], finetuned_model)
 
         print(f"\n[{i+1}/{len(df)}] source={row['source']}")
-        print(f"  User       : {last_user[:120]}")
-        print(f"  Reference  : {str(row['output'])[:120]}")
-        print(f"  Base model : {base_resp[:120]}")
-        print(f"  Fine-tuned : {ft_resp[:120]}")
+        print(f"  User      : {last_user[:120]}")
+        print(f"  Reference : {str(row['output'])[:120]}")
+        print(f"  Base      : {base_resp[:120]}")
+        print(f"  Finetuned : {ft_resp[:120]}")
 
         results.append({
             "source":             row["source"],
